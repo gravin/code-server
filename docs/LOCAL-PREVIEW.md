@@ -1,0 +1,41 @@
+# 本地源码编译与预览
+
+双击仓库根目录的 `build-and-start.bat`。唯一启动入口维护在 code-server 中。
+
+默认打开 `D:\BaiduNetdiskDownload\智能体集\claude_code`，浏览器地址为
+`http://127.0.0.1:8080/`。这是本机浏览器预览，服务仅监听本机。
+在窗口中按 Ctrl+C 停止；再次双击前先停止旧窗口。
+
+脚本使用 Ubuntu WSL，从当前 code-server fork 编译，不下载 code-server
+发行版。同级存在 `codetour` 或 `CodeTour` 时，从它的源码编译 Node/Web
+扩展、打包 VSIX，并强制安装进本次编译的 code-server。缺少此目录则跳过。
+VSIX 同时保存在 CodeTour 根目录的 `codetour-local.vsix`。
+
+第一次运行会安装 Ubuntu 构建依赖和私有 Node 24，拉取仓库锁定的 VS Code
+子模块、应用 patches，并完成完整构建。需要联网；sudo 可能要求 Ubuntu
+密码。完整 VS Code 首次构建可能很久。后续总会重新编译 code-server 和
+CodeTour；未改变的 VS Code 源码及其构建产物会复用。
+为控制 WSL 内存占用，构建只生成所需的浏览器服务端，不同时打包桌面版；
+本地预览使用未压缩产物。构建任务调整只发生在生成缓存，完成后会还原。
+
+修改 code-server 的 `src/` 或同级 CodeTour 的 `src/` 后直接重跑即可。
+修改底层 VS Code 时，遵循 `docs/CONTRIBUTING.md` 的 quilt 流程，将改动
+维护在 code-server 的 `patches/` 中；脚本会重新应用并编译补丁。
+
+源码从 Windows fork 同步到 `~/.cache/elevator-preview/<仓库路径哈希>/`
+编译，日志在其中的 `build.log`，运行数据和扩展在 `preview/`。在 Windows
+fork 中修改源码，不在这个生成缓存中编辑。打开的目标代码仍是 D 盘原目录；
+在浏览器中修改代码会直接保存到目标目录。构建失败会停止，不启动旧版本。
+
+命令行可指定其它目录或仅验证/构建：
+
+```bat
+build-and-start.bat "D:\some other project"
+build-and-start.bat --check
+build-and-start.bat --build-only
+```
+
+可在调用前设置 `ELEVATOR_WSL_DISTRO`（默认 Ubuntu）、
+`ELEVATOR_PREVIEW_PORT`（默认 8080）、`ELEVATOR_NO_PAUSE=1` 或
+`ELEVATOR_NO_BROWSER=1`。bat 会自动传递需要的变量到 WSL；
+默认双击运行不需要设置任何变量。
