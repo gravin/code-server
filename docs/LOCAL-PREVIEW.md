@@ -4,12 +4,51 @@
 双击同目录的 `stop-code-server.bat` 停止服务。停止脚本复用启动入口的
 `--stop`，无需重复维护停止逻辑。
 
-默认打开 `D:\BaiduNetdiskDownload\智能体集\claude_code`，浏览器地址为
-`http://127.0.0.1:8080/`。这是本机浏览器预览，服务仅监听本机。
+默认读取仓库根目录的 `projects.json`，将所有 `enabled: true` 的项目
+放进同一个多项目工作区，使用一个 code-server 服务、一个 8080 端口。
+当前列表包含 claude_code、code-server 和 CodeTour 三个项目。
+浏览器自动打开 `http://127.0.0.1:8080/?workspace=...`。
+这是本机浏览器预览，服务仅监听本机。
 在启动窗口中按 Ctrl+C 停止、双击 `stop-code-server.bat`，或在 PowerShell 中执行
 `.\build-and-start.bat --stop`。此命令只关闭本仓库启动的 code-server，
 不重新编译、不停止整个 WSL，也不会关闭其它项目的 Node 进程。
 网页关闭标签页不会停止后台服务；再次双击前先停止旧服务。
+
+## 维护项目列表
+
+在 `projects.json` 的 `projects` 数组中添加或修改项目：
+
+```json
+{
+  "projects": [
+    {
+      "name": "claude_code",
+      "path": "D:/BaiduNetdiskDownload/智能体集/claude_code",
+      "enabled": true
+    },
+    {
+      "name": "另一个项目",
+      "path": "D:/my-python-project",
+      "enabled": false
+    }
+  ]
+}
+```
+
+`name` 是文件树中的显示名称；`path` 推荐用 Windows 路径和正斜杠，
+避免 JSON 的反斜杠转义。也支持 WSL 绝对路径或相对于本 JSON 的路径。
+`enabled: false` 的项目不会打开，也不会检查目录是否存在。
+至少启用一个项目；已启用的路径不存在、重复目录、重名或 JSON 格式错误
+会明确报错并停止启动。JSON 不支持注释和尾部多余逗号。
+
+修改列表后先停止服务，再双击启动脚本。脚本会重新生成缓存中的
+`preview/projects.code-workspace`；只维护 projects.json，不编辑生成文件。
+旧的 `?folder=...` 标签页仍是单目录；要看项目列表，请使用新启动打开的
+`?workspace=...` 页面。各项目保留自己的 Git、.vscode 和 .tours 文件。
+
+项目可以使用不同语言。语法高亮、补全、调试按文件语言和各项目配置工作；
+某些语言的完整功能需要在 WSL 中安装相应扩展、运行时或编译器。
+项目越多，索引及语言服务可能占用更多内存，可以暂时禁用不用的项目。
 
 脚本使用 Ubuntu WSL，从当前 code-server fork 编译，不下载 code-server
 发行版。同级存在 `codetour` 或 `CodeTour` 时，从它的源码编译 Node/Web
@@ -48,7 +87,8 @@ CodeTour；未改变的 VS Code 源码及其构建产物会复用。
 fork 中修改源码，不在这个生成缓存中编辑。打开的目标代码仍是 D 盘原目录；
 在浏览器中修改代码会直接保存到目标目录。构建失败会停止，不启动旧版本。
 
-命令行可指定其它目录或仅验证/构建：
+命令行指定目录时，会临时覆盖项目列表，只打开该目录；不会修改 JSON。
+也可以仅验证列表/构建：
 
 ```bat
 build-and-start.bat "D:\some other project"

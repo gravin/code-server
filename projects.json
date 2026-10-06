@@ -1,0 +1,19 @@
+{
+  "projects": [
+    {
+      "name": "claude_code",
+      "path": "D:/BaiduNetdiskDownload/智能体集/claude_code",
+      "enabled": true
+    },
+    {
+      "name": "code-server",
+      "path": "C:/Users/gravi/Documents/elevator/code-server",
+      "enabled": true
+    },
+    {
+      "name": "CodeTour",
+      "path": "C:/Users/gravi/Documents/elevator/codetour",
+      "enabled": true
+    }
+  ]
+}

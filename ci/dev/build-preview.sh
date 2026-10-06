@@ -3,7 +3,7 @@
 main() {
 set -Eeuo pipefail
 source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-target='/mnt/d/BaiduNetdiskDownload/智能体集/claude_code'
+target=''
 mode=run
 for arg in "$@"; do
   case "$arg" in
@@ -23,7 +23,9 @@ if [[ "$mode" == stop ]]; then
   python3 "$source_root/ci/dev/stop-preview.py" "$cache"
   exit $?
 fi
-[[ -d "$target" ]] || { echo "Project directory does not exist: $target" >&2; exit 1; }
+if [[ -n "$target" && ! -d "$target" ]]; then
+  echo "Project directory does not exist: $target" >&2; exit 1
+fi
 port=${ELEVATOR_PREVIEW_PORT:-8080}
 [[ "$port" =~ ^[0-9]+$ ]] && ((port > 0 && port < 65536)) || { echo 'Invalid preview port' >&2; exit 1; }
 tour_source=''
@@ -35,9 +37,13 @@ while IFS= read -r -d '' candidate; do
 done < <(find "$(dirname "$source_root")" -mindepth 1 -maxdepth 1 -type d -print0)
 echo "code-server source: $source_root"
 echo "CodeTour source: ${tour_source:-absent (extension build skipped)}"
-echo "Reading workspace: $target"
 if [[ "$mode" == check ]]; then
   command -v git rsync curl python3 flock >/dev/null
+  if [[ -z "$target" ]]; then
+    target=$(python3 "$source_root/ci/dev/preview-projects.py" \
+      --config "$source_root/projects.json" --workspace "$cache/preview/projects.code-workspace" --check)
+  fi
+  echo "Reading workspace: $target"
   echo 'WSL and source paths checked. --check does not install or build.'
   exit 0
 fi
@@ -47,6 +53,11 @@ flock -n 9 || { echo 'This preview is already building/running. Stop its server 
 exec > >(tee -a "$cache/build.log") 2>&1
 trap 'echo "FAILED at line $LINENO. Log: $cache/build.log" >&2' ERR
 echo "Build cache and logs: $cache"
+if [[ -z "$target" ]]; then
+  target=$(python3 "$source_root/ci/dev/preview-projects.py" \
+    --config "$source_root/projects.json" --workspace "$cache/preview/projects.code-workspace")
+fi
+echo "Reading workspace: $target"
 
 # Install Linux build tools only if missing. sudo may ask for the Ubuntu password.
 packages=(build-essential git git-lfs curl ca-certificates rsync jq quilt unzip pkg-config python-is-python3 libx11-dev libxkbfile-dev libsecret-1-dev libkrb5-dev)
@@ -228,7 +239,14 @@ then
   exit 1
 fi
 url="http://127.0.0.1:$port/"
-echo "Starting $url (Ctrl+C to stop)."
+open_url=$(python3 - "$url" "$target" <<'PY'
+import sys
+from urllib.parse import urlencode
+kind = 'workspace' if sys.argv[2].endswith('.code-workspace') else 'folder'
+print(sys.argv[1] + '?' + urlencode({kind: sys.argv[2]}))
+PY
+)
+echo "Starting $open_url (Ctrl+C to stop)."
 "$server" "${common[@]}" --bind-addr "127.0.0.1:$port" --auth none --disable-telemetry "$target" &
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
@@ -249,7 +267,7 @@ for ((attempt=0; attempt<120; attempt++)); do
 done
 ((ready)) || { echo 'Server startup timed out'; exit 1; }
 if [[ -z ${ELEVATOR_NO_BROWSER:-} ]]; then
-  powershell.exe -NoProfile -Command "Start-Process '$url'" || echo "Open $url in your browser."
+  powershell.exe -NoProfile -Command "Start-Process '$open_url'" || echo "Open $open_url in your browser."
 fi
 wait "$server_pid"
 }
