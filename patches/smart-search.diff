@@ -1,0 +1,296 @@
+Restrict Smart workspace search to the saved Explorer visibility scope.
+
+--- code-server.orig/lib/vscode/src/vs/workbench/services/search/common/smartSearchScope.ts
++++ code-server/lib/vscode/src/vs/workbench/services/search/common/smartSearchScope.ts
+@@ -0,0 +1,71 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Microsoft Corporation. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import * as glob from '../../../../base/common/glob.js';
++import { isEqualOrParent, relativePath } from '../../../../base/common/resources.js';
++import { URI } from '../../../../base/common/uri.js';
++import type { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import type { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
++import type { ICommonQueryProps } from './search.js';
++
++export interface ISmartSearchScope { root: URI; files: string[]; directories: string[]; scannedAt?: string }
++const filesByScope = new WeakMap<ISmartSearchScope, Set<string>>();
++const metadata = ['.vscode', '.tours', '.mvn'];
++
++export function getSmartSearchScope(configuration: IConfigurationService, workspace: IWorkspaceContextService): ISmartSearchScope | undefined {
++	const snapshot = configuration.getValue<{ root?: string; files?: string[]; directories?: string[]; scannedAt?: string }>('elevator.smartWorkspace');
++	const root = workspace.getWorkspace().folders.find(folder => folder.uri.path === snapshot?.root)?.uri;
++	return root && Array.isArray(snapshot?.files) ? { root, files: snapshot.files, directories: snapshot.directories ?? ['.'], scannedAt: snapshot.scannedAt } : undefined;
++}
++
++export function isSmartSearchResourceAllowed(scope: ISmartSearchScope | undefined, resource: URI): boolean {
++	if (!scope) { return true; }
++	if (!isEqualOrParent(resource, scope.root)) { return false; }
++	const relative = relativePath(scope.root, resource);
++	if (!relative) { return false; }
++	const parts = relative.split('/');
++	const metadataIndex = parts.findIndex(part => metadata.includes(part));
++	if (metadataIndex >= 0) { return scope.directories.includes(parts.slice(0, metadataIndex).join('/') || '.'); }
++	let files = filesByScope.get(scope);
++	if (!files) { files = new Set(scope.files); filesByScope.set(scope, files); }
++	return files.has(relative);
++}
++
++function literalGlob(value: string): string {
++	return value.replace(/[\[\]*?{}]/g, character => `[${character}]`);
++}
++
++// Providers receive an inclusion list, so hidden file contents are not searched.
++// Keep the original query for result validation (providers can ignore filters).
++export function restrictSmartSearchQuery<T extends ICommonQueryProps<URI>>(query: T, matchesOriginal: (resource: URI) => boolean): T {
++	const scope = query.smartSearchScope;
++	if (!scope) { return query; }
++	const folderQueries = query.folderQueries.filter(folder => isEqualOrParent(folder.folder, scope.root)).map(folder => {
++		const includePattern: glob.IExpression = Object.create(null);
++		for (const file of scope.files) {
++			const resource = URI.joinPath(scope.root, file);
++			if (!isEqualOrParent(resource, folder.folder) || !matchesOriginal(resource)) { continue; }
++			const relative = relativePath(folder.folder, resource)!;
++			if (folder.includePattern && !glob.match(folder.includePattern, relative)) { continue; }
++			includePattern[literalGlob(relative)] = true;
++		}
++		// Explorer deliberately keeps these project metadata directories accessible.
++		for (const directory of scope.directories) {
++			const ancestor = directory === '.' ? scope.root : URI.joinPath(scope.root, directory);
++			for (const name of metadata) {
++				const metadataRoot = URI.joinPath(ancestor, name);
++				if (isEqualOrParent(metadataRoot, folder.folder)) {
++					includePattern[`${literalGlob(relativePath(folder.folder, metadataRoot)!)}/**`] = true;
++				} else if (isEqualOrParent(folder.folder, metadataRoot)) { includePattern['**'] = true; }
++			}
++		}
++		// Never let an empty include list mean "search everything" to a provider.
++		if (!Object.keys(includePattern).length) { includePattern['**'] = false; }
++		return { ...folder, includePattern };
++	}).filter(folder => Object.values(folder.includePattern).some(Boolean));
++	return { ...query, folderQueries, includePattern: undefined, usingSearchPaths: true,
++		...('cacheKey' in query && typeof query.cacheKey === 'string' ? { cacheKey: `${query.cacheKey}:${scope.scannedAt ?? ''}` } : {}),
++		extraFileResources: query.extraFileResources?.filter(resource => isSmartSearchResourceAllowed(scope, resource) && matchesOriginal(resource)) };
++}
+--- code-server.orig/lib/vscode/src/vs/workbench/services/search/common/search.ts
++++ code-server/lib/vscode/src/vs/workbench/services/search/common/search.ts
+@@ -20,6 +20,7 @@
+ import { AISearchKeyword, GlobPattern, TextSearchCompleteMessageType } from './searchExtTypes.js';
+ import { isThenable } from '../../../../base/common/async.js';
+ import { ResourceSet } from '../../../../base/common/map.js';
++import { ISmartSearchScope, isSmartSearchResourceAllowed } from './smartSearchScope.js';
+ 
+ export { TextSearchCompleteMessageType };
+ 
+@@ -90,6 +91,8 @@
+ }
+ 
+ export interface ICommonQueryProps<U extends UriComponents> {
++	/** Saved Explorer visibility scope, independent of user exclude toggles. */
++	smartSearchScope?: ISmartSearchScope;
+ 	/** For telemetry - indicates what is triggering the source */
+ 	_reason?: string;
+ 
+@@ -498,6 +501,7 @@
+ }
+ 
+ export function pathIncludedInQuery(queryProps: ICommonQueryProps<URI>, fsPath: string): boolean {
++	if (queryProps.smartSearchScope && !isSmartSearchResourceAllowed(queryProps.smartSearchScope, queryProps.smartSearchScope.root.with({ path: fsPath.replace(/\\/g, '/') }))) { return false; }
+ 	const globOptions = queryProps.ignoreGlobCase ? { ignoreCase: true } : undefined;
+ 	if (queryProps.excludePattern && glob.match(queryProps.excludePattern, fsPath, globOptions)) {
+ 		return false;
+--- code-server.orig/lib/vscode/src/vs/workbench/services/search/common/queryBuilder.ts
++++ code-server/lib/vscode/src/vs/workbench/services/search/common/queryBuilder.ts
+@@ -103,6 +103,8 @@
+ 	};
+ }
+ 
++import { getSmartSearchScope } from './smartSearchScope.js';
++
+ export class QueryBuilder {
+ 
+ 	constructor(
+@@ -241,7 +243,9 @@
+ 			folderResources.map(folder => this.getFolderQueryForRoot(folder, options, excludeSearchPathsInfo, includeFolderName)))
+ 			.filter(query => !!query) as IFolderQuery[];
+ 
++		const smartSearchScope = getSmartSearchScope(this.configurationService, this.workspaceContextService);
+ 		const queryProps: ICommonQueryProps<uri> = {
++			...(smartSearchScope ? { smartSearchScope } : {}),
+ 			_reason: options._reason,
+ 			folderQueries,
+ 			usingSearchPaths: !!(includeSearchPathsInfo.searchPaths && includeSearchPathsInfo.searchPaths.length),
+--- code-server.orig/lib/vscode/src/vs/workbench/services/search/common/searchService.ts
++++ code-server/lib/vscode/src/vs/workbench/services/search/common/searchService.ts
+@@ -25,6 +25,10 @@
+ import { DEFAULT_MAX_SEARCH_RESULTS, deserializeSearchError, FileMatch, IAITextQuery, ICachedSearchStats, IFileMatch, IFileQuery, IFileSearchStats, IFolderQuery, IProgressMessage, isAIKeyword, ISearchComplete, ISearchEngineStats, ISearchProgressItem, ISearchQuery, ISearchResultProvider, ISearchService, isFileMatch, isProgressMessage, ITextQuery, pathIncludedInQuery, QueryType, SEARCH_RESULT_LANGUAGE_ID, SearchError, SearchErrorCode, SearchProviderType } from './search.js';
+ import { getTextSearchMatchWithModelContext, editorMatchesToTextSearchResults } from './searchHelpers.js';
+ 
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
++import { getSmartSearchScope, isSmartSearchResourceAllowed, restrictSmartSearchQuery } from './smartSearchScope.js';
++
+ export class SearchService extends Disposable implements ISearchService {
+ 
+ 	declare readonly _serviceBrand: undefined;
+@@ -47,6 +51,8 @@
+ 		@IExtensionService private readonly extensionService: IExtensionService,
+ 		@IFileService private readonly fileService: IFileService,
+ 		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
++		@IConfigurationService private readonly configurationService: IConfigurationService,
++		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+ 	) {
+ 		super();
+ 	}
+@@ -123,6 +129,7 @@
+ 		syncResults: ISearchComplete;
+ 		asyncResults: Promise<ISearchComplete>;
+ 	} {
++		query = { ...query, smartSearchScope: this.configurationService && this.workspaceContextService ? getSmartSearchScope(this.configurationService, this.workspaceContextService) : query.smartSearchScope };
+ 		// Get open editor results from dirty/untitled
+ 		const openEditorResults = this.getOpenEditorResults(query);
+ 
+@@ -171,6 +178,10 @@
+ 	}
+ 
+ 	private doSearch(query: ISearchQuery, token?: CancellationToken, onProgress?: (item: ISearchProgressItem) => void): Promise<ISearchComplete> {
++		query = { ...query, smartSearchScope: this.configurationService && this.workspaceContextService ? getSmartSearchScope(this.configurationService, this.workspaceContextService) : query.smartSearchScope };
++		const originalQuery = query;
++		const allowed = (resource: URI) => isSmartSearchResourceAllowed(originalQuery.smartSearchScope, resource) && (!originalQuery.smartSearchScope || pathIncludedInQuery(originalQuery, resource.fsPath));
++		query = restrictSmartSearchQuery(query, allowed);
+ 		this.logService.trace('SearchService#search', JSON.stringify(query));
+ 
+ 		const schemesInQuery = this.getSchemesInQuery(query);
+@@ -193,7 +204,7 @@
+ 					return;
+ 				}
+ 
+-				onProgress?.(item);
++				if (!isFileMatch(item) || allowed(item.resource)) { onProgress?.(item); }
+ 			};
+ 
+ 			const exists = await Promise.all(query.folderQueries.map(query => this.fileService.exists(query.folder)));
+@@ -213,7 +224,7 @@
+ 				limitHit: completes[0] && completes[0].limitHit,
+ 				stats: completes[0].stats,
+ 				messages: arrays.coalesce(completes.flatMap(i => i.messages)).filter(arrays.uniqueFilter(message => message.type + message.text + message.trusted)),
+-				results: completes.flatMap((c: ISearchComplete) => c.results),
++				results: completes.flatMap((c: ISearchComplete) => c.results).filter(result => allowed(result.resource)),
+ 				aiKeywords: completes.flatMap((c: ISearchComplete) => c.aiKeywords).filter(keyword => keyword !== undefined),
+ 			};
+ 		})();
+--- code-server.orig/lib/vscode/src/vs/workbench/contrib/search/browser/anythingQuickAccess.ts
++++ code-server/lib/vscode/src/vs/workbench/contrib/search/browser/anythingQuickAccess.ts
+@@ -96,6 +96,8 @@
+ }
+ 
+ 
++import { getSmartSearchScope, isSmartSearchResourceAllowed } from '../../../services/search/common/smartSearchScope.js';
++
+ export class AnythingQuickAccessProvider extends PickerQuickAccessProvider<IAnythingQuickPickItem> {
+ 
+ 	static PREFIX = '';
+@@ -503,10 +505,12 @@
+ 
+ 	private getEditorHistoryPicks(query: IPreparedQuery): Array<IAnythingQuickPickItem> {
+ 		const configuration = this.configuration;
++		const scope = getSmartSearchScope(this.configurationService, this.contextService);
++		const history = this.historyService.getHistory().filter(editor => !scope || !!editor.resource && isSmartSearchResourceAllowed(scope, editor.resource));
+ 
+ 		// Just return all history entries if not searching
+ 		if (!query.normalized) {
+-			return this.historyService.getHistory().map(editor => this.createAnythingPick(editor, configuration));
++			return history.map(editor => this.createAnythingPick(editor, configuration));
+ 		}
+ 
+ 		if (!this.configuration.includeHistory) {
+@@ -516,7 +520,7 @@
+ 		// Perform filtering
+ 		const editorHistoryScorerAccessor = query.containsPathSeparator ? quickPickItemScorerAccessor : this.labelOnlyEditorHistoryPickAccessor; // Only match on label of the editor unless the search includes path separators
+ 		const editorHistoryPicks: Array<IAnythingQuickPickItem> = [];
+-		for (const editor of this.historyService.getHistory()) {
++		for (const editor of history) {
+ 			const resource = editor.resource;
+ 			if (!resource) {
+ 				continue;
+@@ -755,6 +759,7 @@
+ 				return;
+ 			}
+ 
++			if (!isSmartSearchResourceAllowed(getSmartSearchScope(this.configurationService, this.contextService), resource)) { return; }
+ 			try {
+ 				const stat = await this.fileService.stat(resource);
+ 				if (stat.isFile) {
+@@ -789,6 +794,7 @@
+ 					this.pathService.defaultUriScheme
+ 				);
+ 
++				if (!isSmartSearchResourceAllowed(getSmartSearchScope(this.configurationService, this.contextService), resource)) { continue; }
+ 				try {
+ 					const stat = await this.fileService.stat(resource);
+ 					if (stat.isFile) {
+--- code-server.orig/lib/vscode/src/vs/workbench/contrib/search/browser/notebookSearch/notebookSearchService.ts
++++ code-server/lib/vscode/src/vs/workbench/contrib/search/browser/notebookSearch/notebookSearchService.ts
+@@ -24,6 +24,8 @@
+ import { QueryBuilder } from '../../../../services/search/common/queryBuilder.js';
+ import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+ 
++import { restrictSmartSearchQuery } from '../../../../services/search/common/smartSearchScope.js';
++
+ interface IOpenNotebookSearchResults {
+ 	results: ResourceMap<INotebookFileMatchWithModel | null>;
+ 	limitHit: boolean;
+@@ -184,7 +186,7 @@
+ 							return undefined;
+ 						}
+ 						const serializer = (await this.notebookService.withNotebookDataProvider(notebook.id)).serializer;
+-						return await serializer.searchInNotebooks(textQuery, token, allPriorityInfo);
++						return await serializer.searchInNotebooks(restrictSmartSearchQuery(textQuery, resource => pathIncludedInQuery(textQuery, resource.fsPath)), token, allPriorityInfo);
+ 					} else {
+ 						return undefined;
+ 					}
+@@ -202,6 +204,7 @@
+ 
+ 		let numResults = 0;
+ 		for (const result of results) {
++			if (!pathIncludedInQuery(textQuery, result.resource.fsPath)) { continue; }
+ 			if (textQuery.maxResults && numResults >= textQuery.maxResults) {
+ 				limitHit = true;
+ 				break;
+--- code-server.orig/lib/vscode/src/vs/workbench/contrib/terminalContrib/links/test/browser/terminalLinkOpeners.test.ts
++++ code-server/lib/vscode/src/vs/workbench/contrib/terminalContrib/links/test/browser/terminalLinkOpeners.test.ts
+@@ -86,7 +86,7 @@
+ 	setup(async () => {
+ 		instantiationService = store.add(new TestInstantiationService());
+ 		fileService = store.add(new TestFileService(new NullLogService()));
+-		searchService = store.add(new TestSearchService(null!, null!, null!, null!, null!, null!, null!));
++		searchService = store.add(new TestSearchService(null!, null!, null!, null!, null!, null!, null!, null!, null!));
+ 		instantiationService.set(IFileService, fileService);
+ 		instantiationService.set(ILogService, new NullLogService());
+ 		instantiationService.set(ISearchService, searchService);
+--- code-server.orig/lib/vscode/src/vs/workbench/services/search/browser/searchService.ts
++++ code-server/lib/vscode/src/vs/workbench/services/search/browser/searchService.ts
+@@ -29,6 +29,9 @@
+ import { WebFileSystemAccess } from '../../../../platform/files/browser/webFileSystemAccess.js';
+ import { revive } from '../../../../base/common/marshalling.js';
+ 
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
++
+ export class RemoteSearchService extends SearchService {
+ 	constructor(
+ 		@IModelService modelService: IModelService,
+@@ -39,8 +42,10 @@
+ 		@IFileService fileService: IFileService,
+ 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+ 		@IUriIdentityService uriIdentityService: IUriIdentityService,
++		@IConfigurationService configurationService: IConfigurationService,
++		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
+ 	) {
+-		super(modelService, editorService, telemetryService, logService, extensionService, fileService, uriIdentityService);
++		super(modelService, editorService, telemetryService, logService, extensionService, fileService, uriIdentityService, configurationService, workspaceContextService);
+ 		const searchProvider = this.instantiationService.createInstance(LocalFileSearchWorkerClient);
+ 		this.registerSearchResultProvider(Schemas.file, SearchProviderType.file, searchProvider);
+ 		this.registerSearchResultProvider(Schemas.file, SearchProviderType.text, searchProvider);
