@@ -9,11 +9,20 @@ for arg in "$@"; do
   case "$arg" in
     --check) mode=check ;;
     --build-only) mode=build ;;
-    --help) echo 'build-and-start.bat [Windows project path] [--check | --build-only]'; exit 0 ;;
+    --stop) mode=stop ;;
+    --help) echo 'build-and-start.bat [Windows project path] [--check | --build-only | --stop]'; exit 0 ;;
     --*) echo "Unknown option: $arg" >&2; exit 1 ;;
     *) target=$(wslpath -u "$arg") ;;
   esac
 done
+cache_id=$(printf '%s' "$source_root" | sha256sum | cut -c1-16)
+cache="$HOME/.cache/elevator-preview/$cache_id"
+# Stop before checking workspace/build dependencies or acquiring the build lock.
+# Match this checkout's compiled server, including runs from the older launcher.
+if [[ "$mode" == stop ]]; then
+  python3 "$source_root/ci/dev/stop-preview.py" "$cache"
+  exit $?
+fi
 [[ -d "$target" ]] || { echo "Project directory does not exist: $target" >&2; exit 1; }
 port=${ELEVATOR_PREVIEW_PORT:-8080}
 [[ "$port" =~ ^[0-9]+$ ]] && ((port > 0 && port < 65536)) || { echo 'Invalid preview port' >&2; exit 1; }
@@ -32,11 +41,9 @@ if [[ "$mode" == check ]]; then
   echo 'WSL and source paths checked. --check does not install or build.'
   exit 0
 fi
-cache_id=$(printf '%s' "$source_root" | sha256sum | cut -c1-16)
-cache="$HOME/.cache/elevator-preview/$cache_id"
 mkdir -p "$cache"
 exec 9>"$cache/build.lock"
-flock -n 9 || { echo 'This preview is already building/running. Close its window first.' >&2; exit 1; }
+flock -n 9 || { echo 'This preview is already building/running. Stop its server with build-and-start.bat --stop, or cancel the build with Ctrl+C.' >&2; exit 1; }
 exec > >(tee -a "$cache/build.log") 2>&1
 trap 'echo "FAILED at line $LINENO. Log: $cache/build.log" >&2' ERR
 echo "Build cache and logs: $cache"

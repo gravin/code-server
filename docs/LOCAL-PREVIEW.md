@@ -1,10 +1,15 @@
 # 本地源码编译与预览
 
-双击仓库根目录的 `build-and-start.bat`。唯一启动入口维护在 code-server 中。
+双击仓库根目录的 `build-and-start.bat` 编译并启动。
+双击同目录的 `stop-code-server.bat` 停止服务。停止脚本复用启动入口的
+`--stop`，无需重复维护停止逻辑。
 
 默认打开 `D:\BaiduNetdiskDownload\智能体集\claude_code`，浏览器地址为
 `http://127.0.0.1:8080/`。这是本机浏览器预览，服务仅监听本机。
-在窗口中按 Ctrl+C 停止；再次双击前先停止旧窗口。
+在启动窗口中按 Ctrl+C 停止、双击 `stop-code-server.bat`，或在 PowerShell 中执行
+`.\build-and-start.bat --stop`。此命令只关闭本仓库启动的 code-server，
+不重新编译、不停止整个 WSL，也不会关闭其它项目的 Node 进程。
+网页关闭标签页不会停止后台服务；再次双击前先停止旧服务。
 
 脚本使用 Ubuntu WSL，从当前 code-server fork 编译，不下载 code-server
 发行版。同级存在 `codetour` 或 `CodeTour` 时，从它的源码编译 Node/Web
@@ -49,6 +54,7 @@ fork 中修改源码，不在这个生成缓存中编辑。打开的目标代码
 build-and-start.bat "D:\some other project"
 build-and-start.bat --check
 build-and-start.bat --build-only
+build-and-start.bat --stop
 ```
 
 可在调用前设置 `ELEVATOR_WSL_DISTRO`（默认 Ubuntu）、

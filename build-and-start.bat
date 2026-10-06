@@ -11,6 +11,6 @@ if errorlevel 1 (
 )
 wsl.exe -d %ELEVATOR_WSL_DISTRO% --cd "%~dp0." --exec bash ./ci/dev/build-preview.sh %*
 set "RESULT=%ERRORLEVEL%"
-if not "%RESULT%"=="0" echo Build or startup failed. See the error above and the WSL build log.
+if not "%RESULT%"=="0" echo Command failed. See the error above and the WSL build log.
 if not defined ELEVATOR_NO_PAUSE pause
 exit /b %RESULT%
