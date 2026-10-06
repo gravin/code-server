@@ -15,21 +15,20 @@ function activate(context) {
         vscode.workspace.getConfiguration("elevator").get("smartWorkspace", {}).root ||
         vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
         "/mnt/d/"
-      const input = await vscode.window.showInputBox({
-        title: "Open Folder Smartly",
-        prompt: "输入顶层目录。扫描其中的代码项目，保留层级并隐藏无代码的目录。",
-        value: current,
-        placeHolder: "/mnt/d/课程目录（也支持 D:\\课程目录）",
-        validateInput: (value) => {
-          try {
-            normalizeInput(value)
-          } catch (error) {
-            return error.message
-          }
-        },
-      })
-      if (input === undefined) return
       try {
+        const pickerBase =
+          vscode.workspace.workspaceFolders?.[0]?.uri || vscode.workspace.workspaceFile || context.globalStorageUri
+        const defaultUri = pickerBase.with({ path: normalizeInput(current), query: "", fragment: "" })
+        // Reuse VS Code's remote folder picker for browsing, completion and cancel.
+        const selected = await vscode.window.showOpenDialog({
+          title: "Open Folder Smartly",
+          defaultUri,
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          openLabel: "扫描并打开",
+        })
+        if (!selected?.length) return
         const scan = await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
@@ -37,7 +36,7 @@ function activate(context) {
             cancellable: true,
           },
           (progress, token) =>
-            scanProjects(normalizeInput(input), {
+            scanProjects(normalizeInput(selected[0].fsPath), {
               cancelled: () => token.isCancellationRequested,
               progress: (state) =>
                 progress.report({ message: `${state.directories} 个目录，${state.entries} 个条目：${state.current}` }),
