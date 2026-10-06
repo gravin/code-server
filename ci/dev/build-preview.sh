@@ -187,7 +187,11 @@ fi
 npm run release
 server="$build_root/release/bin/code-server"
 state="$cache/preview"
-mkdir -p "$state/user-data" "$state/extensions"
+mkdir -p "$state/user-data/User" "$state/extensions"
+# Seed new profiles with the preview defaults. Keep existing user settings.
+if [[ ! -f "$state/user-data/User/settings.json" ]]; then
+  cp "$build_root/ci/dev/preview-settings.json" "$state/user-data/User/settings.json"
+fi
 common=(--user-data-dir "$state/user-data" --extensions-dir "$state/extensions")
 if [[ -n "$tour_source" ]]; then
   tour_build="$cache/codetour"

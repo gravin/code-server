@@ -11,6 +11,22 @@
 扩展、打包 VSIX，并强制安装进本次编译的 code-server。缺少此目录则跳过。
 VSIX 同时保存在 CodeTour 根目录的 `codetour-local.vsix`。
 
+新用户配置默认使用 `Courier Prime`，回退为 `Courier New`、`monospace`，
+编辑器字号为 16。默认值维护在 `ci/dev/preview-settings.json`；脚本只在
+用户设置文件不存在时写入，不覆盖后来修改的设置。字体需要安装在浏览器
+所在的 Windows 系统中。已有配置可在用户设置 JSON 中调整
+`editor.fontFamily` 和 `editor.fontSize`。
+
+本 fork 的 `patches/workbench-scale.diff` 将整个网页工作台默认放大到
+125%，包括文件树、菜单、导航栏、图标和编辑器，同时调整可用布局尺寸。
+浏览器缩放保持 100% 即可；编辑器字号配置仍为 16，显示时一起放大。
+修改补丁中的比例后重跑启动脚本会重新编译底层 VS Code。
+
+如果 CodeTour 已安装却不显示，先检查页面顶部是否处于 Restricted Mode。
+当前版本的 CodeTour 会因工作区未受信任而禁用。确认这是自己的目标目录后，
+点击顶部 Manage，在 Workspace Trust 页面信任当前文件夹。随后回到 Explorer，
+展开文件树下方的 CodeTour。导览说明保存在目标目录的 `.tours/` 中。
+
 第一次运行会安装 Ubuntu 构建依赖和私有 Node 24，拉取仓库锁定的 VS Code
 子模块、应用 patches，并完成完整构建。需要联网；sudo 可能要求 Ubuntu
 密码。完整 VS Code 首次构建可能很久。后续总会重新编译 code-server 和

@@ -1,0 +1,47 @@
+Scale the browser workbench to 125% by default.
+
+Use native CSS zoom so menus, tree rows, icons, editor text and hit targets
+scale together. Account for the scaled body viewport when laying out the
+workbench, including resize and fullscreen.
+
+Index: code-server/lib/vscode/src/vs/workbench/browser/web.main.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/browser/web.main.ts
++++ code-server/lib/vscode/src/vs/workbench/browser/web.main.ts
+@@ -134,6 +134,11 @@ export class BrowserMain extends Disposa
+ 		// Init services and wait for DOM to be ready in parallel
+ 		const [services] = await Promise.all([this.initServices(), domContentLoaded(getWindow(this.domElement))]);
+ 
++		// Scale the entire code-server UI, independently of browser zoom.
++		// DOM layout uses unscaled CSS pixels; getClientArea compensates below.
++		this.domElement.dataset.codeServerUiScale = '1.25';
++		this.domElement.style.setProperty('zoom', '1.25');
++
+ 		// Create Workbench
+ 		const workbench = this.createWorkbench(this.domElement, services.serviceCollection, services.logService);
+ 
+Index: code-server/lib/vscode/src/vs/base/browser/dom.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/base/browser/dom.ts
++++ code-server/lib/vscode/src/vs/base/browser/dom.ts
+@@ -633,14 +633,18 @@ export function getClientArea(element: H
+ 		return new Dimension(element.clientWidth, element.clientHeight);
+ 	}
+ 
++	// code-server's body zoom changes the CSS-pixel viewport available to the
++	// workbench. Other DOM hosts and auxiliary windows keep their usual sizing.
++	const uiScale = Number(element.dataset.codeServerUiScale) || 1;
++
+ 	// If visual view port exits and it's on mobile, it should be used instead of window innerWidth / innerHeight, or document.body.clientWidth / document.body.clientHeight
+ 	if (platform.isIOS && elWindow?.visualViewport) {
+-		return new Dimension(elWindow.visualViewport.width, elWindow.visualViewport.height);
++		return new Dimension(elWindow.visualViewport.width / uiScale, elWindow.visualViewport.height / uiScale);
+ 	}
+ 
+ 	// Try innerWidth / innerHeight
+ 	if (elWindow?.innerWidth && elWindow.innerHeight) {
+-		return new Dimension(elWindow.innerWidth, elWindow.innerHeight);
++		return new Dimension(elWindow.innerWidth / uiScale, elWindow.innerHeight / uiScale);
+ 	}
+ 
+ 	// Try with document.body.clientWidth / document.body.clientHeight
