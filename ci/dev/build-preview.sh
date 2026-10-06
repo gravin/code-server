@@ -109,7 +109,7 @@ fi
 rsync -a --delete --exclude='/.git/modules/' --exclude='/lib/vscode/' \
   --exclude='/node_modules/' --exclude='/test/node_modules/' --exclude='/test/e2e/extensions/test-extension/node_modules/' \
   --exclude='/out/' --exclude='/release/' --exclude='/lib/vscode-reh-web-*/' \
-  --exclude='/.pc/' --exclude='/.cache/' "$source_root/" "$build_root/"
+  --exclude='/.pc/' --exclude='/.cache/' --exclude='/extension-bundles/' "$source_root/" "$build_root/"
 cd "$build_root"
 git config core.autocrlf false
 # Windows Git may have checked out scripts and patches with CRLF. Normalize
@@ -166,7 +166,9 @@ install_if_changed "$build_root/lib/vscode" "$cache/vscode-deps-key"
 npm run build
 # Include source edits as well as patches in the VS Code build fingerprint.
 vscode_source_key=$(source_digest "$build_root/lib/vscode")
-vscode_key=$(printf '%s:%s' "$patch_key" "$vscode_source_key" | sha256sum | cut -d' ' -f1)
+# Uncommitted fork edits need a fresh browser asset URL as well as a new build.
+vscode_key=$(printf '%s:%s:preview-cache-v2' "$patch_key" "$vscode_source_key" | sha256sum | cut -d' ' -f1)
+export ELEVATOR_VSCODE_BUILD_ID=${vscode_key:0:40}
 if [[ ! -f "$cache/vscode-build-key" || $(cat "$cache/vscode-build-key") != "$vscode_key" || ! -f lib/vscode-reh-web-linux-$(node -p process.arch)/out/server-main.js ]]; then
   # The current VS Code core-ci task builds desktop and two server variants in
   # parallel. For local preview build only the non-minified browser server.
@@ -194,6 +196,11 @@ source = p.read_text()
 if source.count('npm run gulp') != 3:
     raise SystemExit('code-server build:vscode layout changed; update the local build adapter.')
 source = source.replace('npm run gulp', 'node --experimental-strip-types --max-old-space-size=4096 ./node_modules/gulp/bin/gulp.js')
+# Upstream uses the Git commit for year-long browser caching. Local source edits
+# share that commit, so use this preview's content fingerprint for its asset URLs.
+if source.count('BUILD_SOURCEVERSION=$(git rev-parse HEAD)') != 1:
+    raise SystemExit('code-server build commit layout changed; update the preview cache adapter.')
+source = source.replace('BUILD_SOURCEVERSION=$(git rev-parse HEAD)', 'BUILD_SOURCEVERSION="$ELEVATOR_VSCODE_BUILD_ID"')
 p.write_text(source)
 PY
     npm run build:vscode
@@ -211,6 +218,19 @@ if [[ ! -f "$state/user-data/User/settings.json" ]]; then
   cp "$build_root/ci/dev/preview-settings.json" "$state/user-data/User/settings.json"
 fi
 common=(--user-data-dir "$state/user-data" --extensions-dir "$state/extensions")
+python3 "$source_root/ci/dev/preview-extensions.py" --source "$source_root" --cache "$cache" --server "$server"
+# The Java extension ships a JDK, but does not automatically choose it for
+# project compilation. Use it when this WSL session has no configured Java.
+if [[ -z ${JAVA_HOME:-} ]] && ! command -v java >/dev/null; then
+  for java_runtime in "$state"/extensions/redhat.java-*/jre/*; do
+    if [[ -x "$java_runtime/bin/java" && -x "$java_runtime/bin/javac" ]]; then
+      export JAVA_HOME="$java_runtime"
+      export PATH="$JAVA_HOME/bin:$PATH"
+      echo "Using the bundled project JDK: $JAVA_HOME"
+      break
+    fi
+  done
+fi
 if [[ -n "$tour_source" ]]; then
   tour_build="$cache/codetour"
   mkdir -p "$tour_build"

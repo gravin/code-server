@@ -22,3 +22,9 @@ test/test-results
 # Quilt's internal data.
 /.pc
 /patches/*.diff~
+
+# Downloaded offline extension packages are regenerated from the pinned manifest.
+/extension-bundles/*.vsix
+/extension-bundles/*.sha256
+/extension-bundles/*.download
+__pycache__/

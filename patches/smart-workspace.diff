@@ -1,0 +1,140 @@
+Hierarchical multi-root workspaces and File > Open Folder Smartly.
+
+Index: code-server/lib/vscode/src/vs/workbench/browser/actions/workspaceActions.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/browser/actions/workspaceActions.ts
++++ code-server/lib/vscode/src/vs/workbench/browser/actions/workspaceActions.ts
+@@ -336,6 +336,14 @@
+ 
+ // --- Menu Registration
+ 
++// The scanner is a local workspace extension installed by the preview launcher.
++MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
++	group: '2_open',
++	command: { id: 'elevator.openFolderSmartly', title: localize('miOpenFolderSmartly', 'Open Folder Smartly...') },
++	order: 2.1,
++	when: OpenFolderWorkspaceSupportContext
++});
++
+ MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
+ 	group: '2_open',
+ 	command: {
+Index: code-server/lib/vscode/src/vs/workbench/contrib/files/common/explorerModel.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/contrib/files/common/explorerModel.ts
++++ code-server/lib/vscode/src/vs/workbench/contrib/files/common/explorerModel.ts
+@@ -36,8 +36,15 @@
+ 		configService: IConfigurationService,
+ 		filesConfigService: IFilesConfigurationService,
+ 	) {
+-		const setRoots = () => this._roots = this.contextService.getWorkspace().folders
++		// Smart workspaces register each project for language services, but Explorer
++		// renders descendants through their common parent instead of duplicating roots.
++		const setRoots = () => {
++			const smartRoot = configService.getValue<{ root?: string }>('elevator.smartWorkspace')?.root;
++			const hierarchyRoot = this.contextService.getWorkspace().folders.find(folder => folder.uri.path === smartRoot)?.uri;
++			this._roots = this.contextService.getWorkspace().folders
++			.filter(folder => !hierarchyRoot || !isEqualOrParent(folder.uri, hierarchyRoot) || this.uriIdentityService.extUri.isEqual(folder.uri, hierarchyRoot))
+ 			.map(folder => new ExplorerItem(folder.uri, fileService, configService, filesConfigService, undefined, true, false, false, false, folder.name));
++		};
+ 		setRoots();
+ 
+ 		this._listener = this.contextService.onDidChangeWorkspaceFolders(() => {
+@@ -69,6 +76,7 @@
+ 	 * Will return undefined in case the FileStat does not exist.
+ 	 */
+ 	findClosest(resource: URI): ExplorerItem | null {
++		const containingRoot = this.roots.find(root => this.uriIdentityService.extUri.isEqualOrParent(resource, root.resource));
+ 		const folder = this.contextService.getWorkspaceFolder(resource);
+ 		if (folder) {
+ 			const root = this.roots.find(r => this.uriIdentityService.extUri.isEqual(r.resource, folder.uri));
+@@ -77,7 +85,7 @@
+ 			}
+ 		}
+ 
+-		return null;
++		return containingRoot?.find(resource) ?? null;
+ 	}
+ 
+ 	dispose(): void {
+Index: code-server/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerViewer.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerViewer.ts
++++ code-server/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerViewer.ts
+@@ -1227,6 +1227,9 @@
+  * Makes sure that visible editors are always shown in the explorer even if they are filtered out by settings.
+  */
+ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
++	private smartRoot: URI | undefined;
++	private smartDirectories = new Set<string>();
++	private smartFiles: Set<string> | undefined;
+ 	private hiddenExpressionPerRoot = new Map<string, CachedParsedExpression>();
+ 	private editorsAffectingFilter = new Set<EditorInput>();
+ 	private _onDidChange = new Emitter<void>();
+@@ -1249,7 +1252,7 @@
+ 		this.toDispose.push(this._onDidChange);
+ 		this.toDispose.push(this.contextService.onDidChangeWorkspaceFolders(() => this.updateConfiguration()));
+ 		this.toDispose.push(this.configurationService.onDidChangeConfiguration((e) => {
+-			if (e.affectsConfiguration('files.exclude') || e.affectsConfiguration('explorer.excludeGitIgnore')) {
++			if (e.affectsConfiguration('files.exclude') || e.affectsConfiguration('explorer.excludeGitIgnore') || e.affectsConfiguration('elevator.smartWorkspace')) {
+ 				this.updateConfiguration();
+ 			}
+ 		}));
+@@ -1306,7 +1309,11 @@
+ 	}
+ 
+ 	private updateConfiguration(): void {
+-		let shouldFire = false;
++		const smart = this.configurationService.getValue<{ root?: string; directories?: string[]; files?: string[] }>('elevator.smartWorkspace');
++		this.smartRoot = this.contextService.getWorkspace().folders.find(folder => folder.uri.path === smart?.root)?.uri;
++		this.smartDirectories = new Set(smart?.directories ?? []);
++		this.smartFiles = smart?.files ? new Set(smart.files) : undefined;
++		let shouldFire = true;
+ 		let updatedGitIgnoreSetting = false;
+ 		this.contextService.getWorkspace().folders.forEach(folder => {
+ 			const configuration = this.configurationService.getValue<IFilesConfiguration>({ resource: folder.uri });
+@@ -1385,6 +1392,17 @@
+ 	}
+ 
+ 	filter(stat: ExplorerItem, parentVisibility: TreeVisibility): boolean {
++		// Keep the saved code/configuration snapshot and its ancestor directories.
++		// Metadata remains accessible and no files.exclude setting is changed.
++		if (this.smartRoot && !stat.isRoot && !this.explorerService.getEditableData(stat)
++			&& this.uriIdentityService.extUri.isEqualOrParent(stat.resource, this.smartRoot)) {
++			const relative = relativePath(this.smartRoot, stat.resource);
++			if (relative && !relative.split('/').some(part => ['.vscode', '.tours', '.mvn'].includes(part))
++				&& (stat.isDirectory ? !this.smartDirectories.has(relative) : this.smartFiles && !this.smartFiles.has(relative))) {
++				stat.isExcluded = true;
++				return false;
++			}
++		}
+ 		// Add newly visited .gitignore files to the ignore tree
+ 		if (stat.name === '.gitignore' && this.ignoreTreesPerRoot.has(stat.root.resource.toString())) {
+ 			this.processIgnoreFile(stat.root.resource.toString(), stat.resource, false);
+Index: code-server/lib/vscode/src/vs/workbench/services/configuration/browser/configuration.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/services/configuration/browser/configuration.ts
++++ code-server/lib/vscode/src/vs/workbench/services/configuration/browser/configuration.ts
+@@ -4,6 +4,7 @@
+  *--------------------------------------------------------------------------------------------*/
+ 
+ import { URI } from '../../../../base/common/uri.js';
++import { Schemas } from '../../../../base/common/network.js';
+ import { Event, Emitter } from '../../../../base/common/event.js';
+ import * as errors from '../../../../base/common/errors.js';
+ import { Disposable, IDisposable, dispose, toDisposable, MutableDisposable, combinedDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+@@ -668,7 +669,13 @@
+ 		if (!this._initialized) {
+ 			if (this.configurationCache.needsCaching(this._workspaceIdentifier.configPath)) {
+ 				this._workspaceConfiguration = this._cachedConfiguration;
+-				this.waitAndInitialize(this._workspaceIdentifier);
++				const initialization = this.waitAndInitialize(this._workspaceIdentifier);
++				// code-server's remote provider is registered before workspace startup.
++				// A newly generated workspace has no browser cache: wait for its real
++				// folders before publishing the initial workspace and Explorer roots.
++				if (this._workspaceIdentifier.configPath.scheme === Schemas.vscodeRemote) {
++					await initialization;
++				}
+ 			} else {
+ 				this.doInitialize(new FileServiceBasedWorkspaceConfiguration(this.fileService, this.uriIdentityService, this.logService));
+ 			}

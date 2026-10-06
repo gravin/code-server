@@ -36,6 +36,7 @@ export class OptionalString extends Optional<string> {}
 export interface UserProvidedCodeArgs {
   "disable-telemetry"?: boolean
   force?: boolean
+  "do-not-include-pack-dependencies"?: boolean
   "user-data-dir"?: string
   "enable-proposed-api"?: string[]
   "extensions-dir"?: string
@@ -256,6 +257,10 @@ export const options: Options<Required<UserProvidedArgs>> = {
   "builtin-extensions-dir": { type: "string", path: true },
   "list-extensions": { type: "boolean", description: "List installed VS Code extensions." },
   force: { type: "boolean", description: "Avoid prompts when installing VS Code extensions." },
+  "do-not-include-pack-dependencies": {
+    type: "boolean",
+    description: "Install an extension without the optional extensions in its extension pack.",
+  },
   "locate-extension": { type: "string[]" },
   category: { type: "string" },
   "install-extension": {

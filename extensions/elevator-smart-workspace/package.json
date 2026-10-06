@@ -1,0 +1,64 @@
+{
+  "name": "smart-workspace",
+  "displayName": "Elevator Smart Workspace",
+  "description": "Scan a course directory and open its code projects in a hierarchical multi-root workspace.",
+  "publisher": "elevator",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:elevator.openFolderSmartly"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "elevator.openFolderSmartly",
+        "title": "Open Folder Smartly...",
+        "category": "File"
+      }
+    ],
+    "configuration": {
+      "title": "Elevator Smart Workspace",
+      "properties": {
+        "elevator.smartWorkspace": {
+          "type": "object",
+          "scope": "window",
+          "default": {},
+          "description": "Generated scan snapshot for the code-server hierarchical Explorer. Run Open Folder Smartly to regenerate.",
+          "properties": {
+            "root": {
+              "type": "string"
+            },
+            "directories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "scannedAt": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "configurationDefaults": {
+      "python.languageServer": "None"
+    }
+  }
+}
