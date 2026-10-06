@@ -8,12 +8,12 @@
     {
       "name": "code-server",
       "path": "C:/Users/gravi/Documents/elevator/code-server",
-      "enabled": true
+      "enabled": false
     },
     {
       "name": "CodeTour",
       "path": "C:/Users/gravi/Documents/elevator/codetour",
-      "enabled": true
+      "enabled": false
     }
   ]
 }

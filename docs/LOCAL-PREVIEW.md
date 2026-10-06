@@ -66,10 +66,11 @@ VSIX 同时保存在 CodeTour 根目录的 `codetour-local.vsix`。
 浏览器缩放保持 100% 即可；编辑器字号配置仍为 16，显示时一起放大。
 修改补丁中的比例后重跑启动脚本会重新编译底层 VS Code。
 
-如果 CodeTour 已安装却不显示，先检查页面顶部是否处于 Restricted Mode。
-当前版本的 CodeTour 会因工作区未受信任而禁用。确认这是自己的目标目录后，
-点击顶部 Manage，在 Workspace Trust 页面信任当前文件夹。随后回到 Explorer，
-展开文件树下方的 CodeTour。导览说明保存在目标目录的 `.tours/` 中。
+本地预览启动脚本始终传入 `--disable-workspace-trust`，所有打开的工作区
+自动视为可信，包括以后添加到项目列表的目录。不会进入 Restricted Mode，
+扩展、任务和调试也不再因工作区信任而受限，无需逐个点击 Manage。
+CodeTour 导览在 Explorer 文件树下方的 CodeTour 中查看，说明文件仍保存在
+各项目目录的 `.tours/` 中。
 
 第一次运行会安装 Ubuntu 构建依赖和私有 Node 24，拉取仓库锁定的 VS Code
 子模块、应用 patches，并完成完整构建。需要联网；sudo 可能要求 Ubuntu

@@ -247,7 +247,9 @@ print(sys.argv[1] + '?' + urlencode({kind: sys.argv[2]}))
 PY
 )
 echo "Starting $open_url (Ctrl+C to stop)."
-"$server" "${common[@]}" --bind-addr "127.0.0.1:$port" --auth none --disable-telemetry "$target" &
+# This local preview always opens trusted workspaces, including newly added projects.
+"$server" "${common[@]}" --bind-addr "127.0.0.1:$port" --auth none \
+  --disable-telemetry --disable-workspace-trust "$target" &
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
 trap 'exit 130' INT TERM
