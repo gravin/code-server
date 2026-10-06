@@ -1,0 +1,18 @@
+Rescan saved Smart workspaces when refreshing Explorer.
+
+Index: code-server/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+===================================================================
+--- code-server.orig/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerView.ts
++++ code-server/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+@@ -1175,6 +1175,11 @@
+ 		const viewsService = accessor.get(IViewsService);
+ 		const explorerService = accessor.get(IExplorerService);
++		const smartRoot = accessor.get(IConfigurationService).getValue<{ root?: string }>('elevator.smartWorkspace')?.root;
++		const commandService = accessor.get(ICommandService);
+ 		await viewsService.openView(VIEW_ID);
++		if (smartRoot) {
++			await commandService.executeCommand('elevator.refreshSmartWorkspace');
++		}
+ 		await explorerService.refresh();
+ 	}
+ });

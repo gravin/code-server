@@ -1,45 +1,10 @@
-Shared folder/file/save picker cancellation and WSL path input.
+Shared folder/file/save picker WSL path input.
 
 Index: code-server/lib/vscode/src/vs/workbench/services/dialogs/browser/simpleFileDialog.ts
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/workbench/services/dialogs/browser/simpleFileDialog.ts
 +++ code-server/lib/vscode/src/vs/workbench/services/dialogs/browser/simpleFileDialog.ts
-@@ -7,7 +7,7 @@
- import * as resources from '../../../../base/common/resources.js';
- import * as objects from '../../../../base/common/objects.js';
- import { IFileService, IFileStat, FileKind, IFileStatWithPartialMetadata, FileSystemProviderErrorCode, toFileSystemProviderErrorCode } from '../../../../platform/files/common/files.js';
--import { IQuickInputService, IQuickPickItem, IQuickPick, ItemActivation } from '../../../../platform/quickinput/common/quickInput.js';
-+import { IQuickInputService, IQuickPickItem, IQuickPick, ItemActivation, IQuickInputButton } from '../../../../platform/quickinput/common/quickInput.js';
- import { URI } from '../../../../base/common/uri.js';
- import { isWindows, OperatingSystem } from '../../../../base/common/platform.js';
- import { ISaveDialogOptions, IOpenDialogOptions, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-@@ -142,6 +142,11 @@
- 	private updatingPromise: CancelablePromise<boolean> | undefined;
- 
- 	private _showDotFiles: boolean = true;
-+	private readonly cancelButton: IQuickInputButton = {
-+		iconClass: ThemeIcon.asClassName(Codicon.close),
-+		tooltip: nls.localize('remoteFileDialog.cancel', "Cancel (Esc)"),
-+		alwaysVisible: true
-+	};
- 
- 	constructor(
- 		@IFileService private readonly fileService: IFileService,
-@@ -385,7 +390,12 @@
- 
- 			this.setButtons();
- 			this._register(this.filePickBox.onDidTriggerButton(e => {
--				this.setShowDotFiles(!this._showDotFiles);
-+				if (e === this.cancelButton) {
-+					// Use the same cancellation and focus restoration path as Escape.
-+					this.filePickBox.hide();
-+				} else {
-+					this.setShowDotFiles(!this._showDotFiles);
-+				}
- 			}));
- 
- 			let isResolving: number = 0;
-@@ -506,6 +516,13 @@
+@@ -506,6 +506,13 @@
  
  	private async handleValueChange(value: string) {
  		try {
@@ -53,12 +18,3 @@ Index: code-server/lib/vscode/src/vs/workbench/services/dialogs/browser/simpleFi
  			// onDidChangeValue can also be triggered by the auto complete, so if it looks like the auto complete, don't do anything
  			if (this.isValueChangeFromUser()) {
  				// If the user has just entered more bad path, don't change anything
-@@ -537,7 +554,7 @@
- 			iconClass: this._showDotFiles ? ThemeIcon.asClassName(Codicon.eye) : ThemeIcon.asClassName(Codicon.eyeClosed),
- 			tooltip: this._showDotFiles ? nls.localize('remoteFileDialog.hideDotFiles', "Hide dot files") : nls.localize('remoteFileDialog.showDotFiles', "Show dot files"),
- 			alwaysVisible: true
--		}];
-+		}, this.cancelButton];
- 	}
- 
- 	private isBadSubpath(value: string) {

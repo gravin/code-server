@@ -16,13 +16,19 @@
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onCommand:elevator.openFolderSmartly"
+    "onCommand:elevator.openFolderSmartly",
+    "onCommand:elevator.refreshSmartWorkspace"
   ],
   "contributes": {
     "commands": [
       {
         "command": "elevator.openFolderSmartly",
         "title": "Open Folder Smartly...",
+        "category": "File"
+      },
+      {
+        "command": "elevator.refreshSmartWorkspace",
+        "title": "Rescan Smart Workspace",
         "category": "File"
       }
     ],
