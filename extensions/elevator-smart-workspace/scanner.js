@@ -56,21 +56,6 @@ const SOURCES = new Map([
   [".sh", "Shell"],
   [".ps1", "PowerShell"],
 ])
-// HTML/CSS and headers count inside configured or web/C++ projects. A loose
-// Python example must not pull in neighboring exported course/subtitle pages.
-const SUPPORT_SOURCES = new Set([".html", ".htm", ".css", ".scss", ".sass", ".less", ".h", ".hpp"])
-const PROJECT_FILES = new Set([
-  ".json",
-  ".toml",
-  ".yaml",
-  ".yml",
-  ".xml",
-  ".properties",
-  ".ini",
-  ".cfg",
-  ".md",
-  ".gradle",
-])
 const MARKERS = new Map([
   ["pom.xml", "Maven"],
   ["build.gradle", "Gradle"],
@@ -103,9 +88,7 @@ function normalizeInput(value) {
 
 class ScanCancelled extends Error {}
 const posix = (value) => value.split(path.sep).join("/")
-const within = (candidate, parent) => candidate === parent || candidate.startsWith(parent + path.sep)
-const supportsExtraCode = (project) =>
-  project.hasConfiguration || project.types.some((type) => ["Node", "Web", "JavaScript", "TypeScript", "PHP", "C/C++"].includes(type))
+const within = (candidate, parent) => candidate === parent || candidate.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep)
 
 async function scanProjects(root, { cancelled = () => false, progress = () => {}, maxEntries = 300000 } = {}) {
   const stat = await fs.stat(root)
@@ -128,19 +111,17 @@ async function scanProjects(root, { cancelled = () => false, progress = () => {}
     }
     entriesVisited += entries.length
     if (entriesVisited > maxEntries) throw new Error(`扫描超过 ${maxEntries} 个条目，请选择更具体的目录。`)
-    const record = { directory, markers: new Set(), sources: new Set(), notebooks: [], supportCode: false, files: [] }
+    const record = { directory, markers: new Set(), sources: new Set(), notebooks: [] }
     records.push(record)
     for (const entry of entries) {
       if (cancelled()) throw new ScanCancelled("扫描已取消")
       if (entry.isFile()) {
-        record.files.push(entry.name)
         const name = entry.name.toLowerCase()
         const marker = MARKERS.get(name) || (/\.(csproj|fsproj|sln)$/.test(name) ? ".NET" : undefined)
         if (marker) record.markers.add(marker)
         const kind = SOURCES.get(path.extname(name))
-        if (SUPPORT_SOURCES.has(path.extname(name))) record.supportCode = true
-        if (kind && !name.endsWith(".d.ts")) record.sources.add(kind)
-        if (kind === "Notebook") record.notebooks.push(posix(path.relative(root, path.join(directory, entry.name))))
+        if (kind && kind !== "Notebook" && !name.endsWith(".d.ts")) record.sources.add(kind)
+        if (kind === "Notebook") record.notebooks.push(path.join(directory, entry.name))
       }
     }
     if (Date.now() - lastProgress > 250) {
@@ -155,58 +136,41 @@ async function scanProjects(root, { cancelled = () => false, progress = () => {}
   await visit(root)
   if (cancelled()) throw new ScanCancelled("扫描已取消")
   const projects = records.filter((r) => r.markers.size).map((r) => ({ path: r.directory, types: [...r.markers], hasConfiguration: true }))
-  // Loose scripts/notebooks need a root too. A source-containing ancestor groups
-  // its unmarked descendants; explicit nested Maven/Python markers stay separate.
-  const loose = records.filter((r) => r.sources.size).sort((a, b) => a.directory.length - b.directory.length)
-  for (const record of loose) {
-    if (!projects.some((project) => within(record.directory, project.path))) {
-      projects.push({ path: record.directory, types: [...record.sources] })
-    }
-  }
-  if (projects.length > 5000) throw new Error("发现超过 5000 个项目，请选择更具体的目录。")
-  const directories = new Set(["."])
-  const files = new Set()
-  for (const record of records) {
-    if (
-      !record.sources.size &&
-      !record.markers.size &&
-      !(record.supportCode && projects.some((project) => within(record.directory, project.path)
-        && supportsExtraCode(project)))
-    )
-      continue
-    let directory = record.directory
+  const codeRoots = new Set(projects.map((project) => project.path))
+  const insideCodeProject = (directory) => {
     while (within(directory, root)) {
-      directories.add(posix(path.relative(root, directory)) || ".")
+      if (codeRoots.has(directory)) return true
       if (directory === root) break
       directory = path.dirname(directory)
     }
+    return false
   }
-  for (const record of records) {
-    const containingProjects = projects.filter((project) => within(record.directory, project.path))
-    const supportsWeb = containingProjects.some(supportsExtraCode)
-    const isCodeProject = containingProjects.some((project) => project.types.some((type) => type !== "Notebook"))
-    for (const name of record.files) {
-      const lower = name.toLowerCase()
-      const extension = path.extname(lower)
-      if (
-        SOURCES.has(extension) ||
-        MARKERS.has(lower) ||
-        /\.(csproj|fsproj|sln)$/.test(lower) ||
-        (isCodeProject &&
-          (PROJECT_FILES.has(extension) ||
-            [".gitignore", ".env", ".env.example", "dockerfile", "makefile"].includes(lower))) ||
-        (supportsWeb && SUPPORT_SOURCES.has(extension))
-      ) {
-        files.add(posix(path.relative(root, path.join(record.directory, name))))
-      }
+  // Loose scripts need a root too. A source-containing ancestor groups
+  // its unmarked descendants; explicit nested Maven/Python markers stay separate.
+  const loose = records.filter((r) => r.sources.size).sort((a, b) => a.directory.length - b.directory.length)
+  for (const record of loose) {
+    if (!insideCodeProject(record.directory)) {
+      projects.push({ path: record.directory, types: [...record.sources] })
+      codeRoots.add(record.directory)
     }
   }
+  // Runtime membership walks path ancestors, rather than enumerating project
+  // files. Keep nested language roots, but omit redundant nested scope roots.
+  const projectRoots = [...codeRoots].filter((directory) => directory === root || !insideCodeProject(path.dirname(directory))).sort()
+  const allNotebooks = records.flatMap((record) => record.notebooks).sort()
+  const notebooks = allNotebooks.filter((file) => !insideCodeProject(path.dirname(file)))
+  // Notebook folders remain language/kernel roots without exposing siblings.
+  for (const directory of new Set(notebooks.map((file) => path.dirname(file)))) {
+    projects.push({ path: directory, types: ["Notebook"] })
+  }
+  if (projects.length > 5000) throw new Error("发现超过 5000 个项目，请选择更具体的目录。")
   return {
     root,
     projects: projects.sort((a, b) => a.path.localeCompare(b.path)),
-    directories: [...directories].sort(),
-    files: [...files].sort(),
-    notebooks: records.flatMap((r) => r.notebooks),
+    projectRoots,
+    notebooks,
+    notebookCount: allNotebooks.length,
+    skipDirectories: [...SKIP].sort(),
     warnings,
     entriesVisited,
     scannedAt: new Date().toISOString(),
@@ -230,8 +194,10 @@ function createWorkspace(scan, previous = {}) {
       "explorer.compactFolders": false,
       "elevator.smartWorkspace": {
         root: scan.root,
-        directories: scan.directories,
-        files: scan.files,
+        version: 2,
+        projectRoots: scan.projectRoots,
+        notebooks: scan.notebooks,
+        skipDirectories: scan.skipDirectories,
         scannedAt: scan.scannedAt,
       },
     },
@@ -239,6 +205,7 @@ function createWorkspace(scan, previous = {}) {
     elevatorScan: {
       projects: scan.projects,
       notebooks: scan.notebooks,
+      notebookCount: scan.notebookCount,
       warnings: scan.warnings,
       scannedAt: scan.scannedAt,
     },

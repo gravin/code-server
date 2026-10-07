@@ -6,7 +6,7 @@ const path = require("node:path")
 const os = require("node:os")
 const { scanProjects, createWorkspace, normalizeInput, ScanCancelled } = require("./scanner")
 
-test("mixed projects retain ancestors, prune media branches and ignore generated code", async () => {
+test("mixed projects save compact roots and exact standalone notebooks", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "smart-课程 "))
   try {
     const files = [
@@ -16,6 +16,9 @@ test("mixed projects retain ancestors, prune media branches and ignore generated
       "第一周/Java/module/src/M.java",
       "第二周/Python/pyproject.toml",
       "第二周/Python/src/app.py",
+      "第二周/Python/data/input.csv",
+      "第二周/Python/assets/logo.png",
+      "第二周/Python/notebooks/internal.ipynb",
       "第三周/实验/a.ipynb",
       "第三周/实验/b.ipynb",
       "第三周/实验/README.md",
@@ -33,6 +36,8 @@ test("mixed projects retain ancestors, prune media branches and ignore generated
       "只有文档/README.md",
       "只有文档/说明.html",
       "第二周/Python/.venv/ignored.py",
+      "第二周/Python/.idea/hidden.ipynb",
+      "第二周/Python/BUILD/hidden.py",
       "前端/node_modules/package/index.js",
     ]
     for (const file of files) {
@@ -42,35 +47,54 @@ test("mixed projects retain ancestors, prune media branches and ignore generated
     await fs.symlink(root, path.join(root, "cycle"))
     const scan = await scanProjects(root)
     assert.equal(scan.projects.length, 6)
-    assert.equal(scan.notebooks.length, 2)
+    assert.equal(scan.notebookCount, 3)
+    assert.deepEqual(scan.notebooks, [path.join(root, "第三周/实验/a.ipynb"), path.join(root, "第三周/实验/b.ipynb")])
     assert(scan.projects.some((p) => p.path.endsWith("/Java/module")))
-    assert(scan.directories.includes("第一周/Java/src/main/java"))
-    assert(scan.directories.includes("第一周"))
     assert(scan.projects.some((p) => p.path.endsWith("/前端") && p.types.includes("Node")))
-    assert(scan.directories.includes("第五周/前端/styles"))
-    assert(scan.directories.includes("第五周/前端/pages"))
-    assert(scan.files.includes("第五周/前端/package.json"))
-    assert(scan.files.includes("第五周/前端/pages/index.html"))
-    assert(!scan.files.includes("视频/recording.mp4"))
-    assert(!scan.files.includes("只有文档/说明.html"))
-    assert(!scan.files.includes("第三周/实验/README.md"))
-    assert(!scan.files.includes("第三周/实验/课程资料.json"))
-    assert(!scan.files.includes("第四周/示例/课程讲义.html"))
-    assert(!scan.directories.includes("第四周/示例/字幕"))
-    for (const hidden of ["视频", "只有文档", "前端", "cycle", "第二周/Python/.venv"])
-      assert(!scan.directories.includes(hidden))
+    assert.deepEqual(scan.projectRoots, ["第一周/Java", "第二周/Python", "第四周/示例", "第五周/前端"].map((p) => path.join(root, p)).sort())
+    assert.equal(scan.directories, undefined)
+    assert.equal(scan.files, undefined)
+    assert(scan.skipDirectories.includes(".idea"))
     const workspace = createWorkspace(scan, { settings: { "editor.fontSize": 18 }, tasks: { version: "2.0.0" } })
     assert.equal(workspace.folders.length, 7) // common root + six language roots
     assert.equal(workspace.folders[0].path, root)
     assert.equal(workspace.settings["editor.fontSize"], 18)
     assert.equal(workspace.tasks.version, "2.0.0")
     assert.equal(workspace.settings["files.exclude"], undefined)
+    const snapshot = workspace.settings["elevator.smartWorkspace"]
+    assert.equal(snapshot.version, 2)
+    assert.deepEqual(snapshot.projectRoots, scan.projectRoots)
+    assert.deepEqual(snapshot.notebooks, scan.notebooks)
+    assert.equal(snapshot.directories, undefined)
+    assert.equal(snapshot.files, undefined)
     // A fresh invocation discovers new code; loading the old snapshot does not.
     await fs.writeFile(path.join(root, "只有文档/new.py"), "print(1)")
-    assert(!workspace.settings["elevator.smartWorkspace"].directories.includes("只有文档"))
+    assert(!snapshot.projectRoots.includes(path.join(root, "只有文档")))
     const rescanned = await scanProjects(root)
     assert.equal(rescanned.projects.length, 7)
-    assert(rescanned.directories.includes("只有文档"))
+    assert(rescanned.projectRoots.includes(path.join(root, "只有文档")))
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
+test("notebooks never turn source ancestors into broad project roots, and old snapshots migrate", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "smart-notebook-"))
+  try {
+    for (const file of ["course.ipynb", "notes.pdf", "nested/example.py", "nested/experiment.ipynb", "nested/docs/reference.pdf"]) {
+      await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true })
+      await fs.writeFile(path.join(root, file), "")
+    }
+    const scan = await scanProjects(root)
+    assert.deepEqual(scan.projectRoots, [path.join(root, "nested")])
+    assert.deepEqual(scan.notebooks, [path.join(root, "course.ipynb")])
+    assert.equal(scan.notebookCount, 2)
+    const previous = { settings: { "elevator.smartWorkspace": { directories: ["."], files: ["course.ipynb"] }, "editor.fontSize": 19 }, launch: { version: "0.2.0" } }
+    const workspace = createWorkspace(scan, previous)
+    assert.equal(workspace.settings["elevator.smartWorkspace"].files, undefined)
+    assert.equal(workspace.settings["editor.fontSize"], 19)
+    assert.equal(workspace.launch.version, "0.2.0")
+    assert.equal(workspace.folders.length, 2) // top-level notebook root already registered
   } finally {
     await fs.rm(root, { recursive: true, force: true })
   }

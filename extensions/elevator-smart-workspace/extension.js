@@ -49,7 +49,7 @@ function activate(context) {
       )
       output.clear()
       output.appendLine(
-        `Root: ${scan.root}\nScanned: ${scan.scannedAt}\nProjects: ${scan.projects.length}\nNotebooks: ${scan.notebooks.length}`,
+        `Root: ${scan.root}\nScanned: ${scan.scannedAt}\nProjects: ${scan.projects.length}\nNotebooks: ${scan.notebookCount}`,
       )
       for (const project of scan.projects) output.appendLine(`[${project.types.join(", ")}] ${project.path}`)
       for (const warning of scan.warnings) output.appendLine(`Skipped: ${warning}`)

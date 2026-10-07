@@ -44,6 +44,30 @@
             "root": {
               "type": "string"
             },
+            "version": {
+              "type": "number"
+            },
+            "projectRoots": {
+              "type": "array",
+              "description": "Absolute code project roots; all contents are visible except skipped directories.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "notebooks": {
+              "type": "array",
+              "description": "Absolute paths of standalone notebooks outside code project roots.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "skipDirectories": {
+              "type": "array",
+              "description": "Directory names excluded from discovery, Explorer and Smart search.",
+              "items": {
+                "type": "string"
+              }
+            },
             "directories": {
               "type": "array",
               "items": {

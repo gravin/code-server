@@ -2,7 +2,7 @@ Restrict Smart workspace search to the saved Explorer visibility scope.
 
 --- code-server.orig/lib/vscode/src/vs/workbench/services/search/common/smartSearchScope.ts
 +++ code-server/lib/vscode/src/vs/workbench/services/search/common/smartSearchScope.ts
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,203 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Microsoft Corporation. All rights reserved.
 + *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -15,62 +15,194 @@ Restrict Smart workspace search to the saved Explorer visibility scope.
 +import type { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 +import type { ICommonQueryProps } from './search.js';
 +
-+export interface ISmartSearchScope { root: URI; files: string[]; directories: string[]; scannedAt?: string }
-+const filesByScope = new WeakMap<ISmartSearchScope, Set<string>>();
++export interface ISmartSearchScope {
++	root: URI;
++	projectRoots?: string[];
++	notebooks?: string[];
++	skipDirectories?: string[];
++	// Read old snapshots until Refresh Explorer replaces them with version 2.
++	files?: string[];
++	directories?: string[];
++	scannedAt?: string;
++}
++
++interface IScopeIndex { projects: Set<string>; notebooks: Set<string>; ancestors: Set<string>; skipped: Set<string>; files: Set<string>; directories: Set<string> }
++const indexes = new WeakMap<ISmartSearchScope, IScopeIndex>();
++const scopes = new WeakMap<object, ISmartSearchScope>();
 +const metadata = ['.vscode', '.tours', '.mvn'];
 +
 +export function getSmartSearchScope(configuration: IConfigurationService, workspace: IWorkspaceContextService): ISmartSearchScope | undefined {
-+	const snapshot = configuration.getValue<{ root?: string; files?: string[]; directories?: string[]; scannedAt?: string }>('elevator.smartWorkspace');
++	const snapshot = configuration.getValue<Omit<ISmartSearchScope, 'root'> & { root?: string }>('elevator.smartWorkspace');
 +	const root = workspace.getWorkspace().folders.find(folder => folder.uri.path === snapshot?.root)?.uri;
-+	return root && Array.isArray(snapshot?.files) ? { root, files: snapshot.files, directories: snapshot.directories ?? ['.'], scannedAt: snapshot.scannedAt } : undefined;
++	if (!root || (!Array.isArray(snapshot.projectRoots) && !Array.isArray(snapshot.files))) { return undefined; }
++	const cached = scopes.get(snapshot);
++	if (cached && cached.root.toString() === root.toString()) { return cached; }
++	const scope = { ...snapshot, root };
++	scopes.set(snapshot, scope);
++	return scope;
 +}
 +
-+export function isSmartSearchResourceAllowed(scope: ISmartSearchScope | undefined, resource: URI): boolean {
++function scopeIndex(scope: ISmartSearchScope): IScopeIndex {
++	let index = indexes.get(scope);
++	if (index) { return index; }
++	index = { projects: new Set(), notebooks: new Set(), ancestors: new Set(['']), skipped: new Set(scope.skipDirectories?.map(name => name.toLowerCase())), files: new Set(scope.files), directories: new Set(scope.directories) };
++	const addAncestors = (relative: string) => {
++		const parts = relative.split('/');
++		for (let i = 1; i < parts.length; i++) { index!.ancestors.add(parts.slice(0, i).join('/')); }
++	};
++	for (const path of scope.projectRoots ?? []) {
++		const resource = scope.root.with({ path });
++		if (!isEqualOrParent(resource, scope.root)) { continue; }
++		const relative = relativePath(scope.root, resource)!;
++		index.projects.add(relative);
++		index.ancestors.add(relative);
++		addAncestors(relative);
++	}
++	for (const path of scope.notebooks ?? []) {
++		const resource = scope.root.with({ path });
++		if (!isEqualOrParent(resource, scope.root)) { continue; }
++		const relative = relativePath(scope.root, resource)!;
++		index.notebooks.add(relative);
++		addAncestors(relative);
++	}
++	indexes.set(scope, index);
++	return index;
++}
++
++// Explorer, open editors, Ctrl+P and every search result use this same rule.
++export function isSmartSearchResourceAllowed(scope: ISmartSearchScope | undefined, resource: URI, isDirectory = false): boolean {
 +	if (!scope) { return true; }
 +	if (!isEqualOrParent(resource, scope.root)) { return false; }
-+	const relative = relativePath(scope.root, resource);
-+	if (!relative) { return false; }
-+	const parts = relative.split('/');
++	const relative = relativePath(scope.root, resource)!;
++	const index = scopeIndex(scope);
++	const parts = relative ? relative.split('/') : [];
++	const directoryParts = isDirectory ? parts : parts.slice(0, -1);
++	if (directoryParts.some(part => index.skipped.has(part.toLowerCase()))) { return false; }
++	if (scope.projectRoots) {
++		if (isDirectory && index.ancestors.has(relative)) { return true; }
++		if (!isDirectory && index.notebooks.has(relative)) { return true; }
++		for (let i = 0; i <= directoryParts.length; i++) {
++			if (index.projects.has(directoryParts.slice(0, i).join('/'))) { return true; }
++		}
++		return false;
++	}
 +	const metadataIndex = parts.findIndex(part => metadata.includes(part));
-+	if (metadataIndex >= 0) { return scope.directories.includes(parts.slice(0, metadataIndex).join('/') || '.'); }
-+	let files = filesByScope.get(scope);
-+	if (!files) { files = new Set(scope.files); filesByScope.set(scope, files); }
-+	return files.has(relative);
++	if (metadataIndex >= 0) { return index.directories.has(parts.slice(0, metadataIndex).join('/') || '.'); }
++	return isDirectory ? !relative || index.directories.has(relative) : index.files.has(relative);
 +}
 +
 +function literalGlob(value: string): string {
 +	return value.replace(/[\[\]*?{}]/g, character => `[${character}]`);
 +}
 +
-+// Providers receive an inclusion list, so hidden file contents are not searched.
-+// Keep the original query for result validation (providers can ignore filters).
++// Expand brace alternatives before consuming directory segments. Braces inside
++// character classes are literals; alternatives can themselves contain '/'.
++function expandBraces(pattern: string): string[] {
++	let bracket = false;
++	let start = -1;
++	let depth = 0;
++	for (let i = 0; i < pattern.length; i++) {
++		const character = pattern[i];
++		if (character === '[') { bracket = true; }
++		if (character === ']') { bracket = false; }
++		if (bracket) { continue; }
++		if (character === '{') { if (!depth++) { start = i; } }
++		if (character === '}' && depth && !--depth) {
++			return glob.splitGlobAware(pattern.slice(start + 1, i), ',').flatMap(part => expandBraces(pattern.slice(0, start) + part + pattern.slice(i + 1)));
++		}
++	}
++	return [pattern];
++}
++
++// Intersect a user glob with a whole project subtree, without listing files.
++// Walk the literal project prefix through a glob's segment states; '**' can
++// consume zero or more segments. The remaining suffixes stay as provider globs.
++function subtreePatterns(prefix: string, expression: glob.IExpression | undefined, ignoreCase: boolean): string[] {
++	const literal = literalGlob(prefix);
++	if (!expression) { return [prefix ? `${literal}/**` : '**']; }
++	const result = new Set<string>();
++	for (const [pattern, value] of Object.entries(expression)) {
++		if (!value) { continue; }
++		for (const expanded of expandBraces(pattern)) {
++			const segments = glob.splitGlobAware(expanded.replace(/\\/g, '/'), '/');
++			const closure = (states: Set<number>) => {
++				for (const state of states) { if (segments[state] === '**') { states.add(state + 1); } }
++				return states;
++			};
++			let states = closure(new Set([0]));
++			for (const part of prefix ? prefix.split('/') : []) {
++				const next = new Set<number>();
++				for (const state of states) {
++					if (segments[state] === '**') { next.add(state); }
++					else if (segments[state] && glob.match(segments[state], part, { ignoreCase })) { next.add(state + 1); }
++				}
++				states = closure(next);
++			}
++			for (const state of states) {
++				if (state >= segments.length) { continue; }
++				result.add([literal, segments.slice(state).join('/')].filter(Boolean).join('/'));
++			}
++		}
++	}
++	return [...result];
++}
++
++// Providers receive project subtree globs, exact standalone notebooks and
++// mandatory directory exclusions. Original query constraints remain in force.
 +export function restrictSmartSearchQuery<T extends ICommonQueryProps<URI>>(query: T, matchesOriginal: (resource: URI) => boolean): T {
 +	const scope = query.smartSearchScope;
 +	if (!scope) { return query; }
++	const index = scopeIndex(scope);
++	const mandatoryExcludes: glob.IExpression = Object.create(null);
++	for (const name of index.skipped) {
++		const caseInsensitiveName = name.replace(/[a-z]/g, character => `[${character}${character.toUpperCase()}]`);
++		// Require a child path: a regular file named "build" or a worktree's
++		// .git pointer is allowed; only directory contents are excluded.
++		mandatoryExcludes[`**/${caseInsensitiveName}/**/*`] = true;
++	}
 +	const folderQueries = query.folderQueries.filter(folder => isEqualOrParent(folder.folder, scope.root)).map(folder => {
 +		const includePattern: glob.IExpression = Object.create(null);
-+		for (const file of scope.files) {
-+			const resource = URI.joinPath(scope.root, file);
-+			if (!isEqualOrParent(resource, folder.folder) || !matchesOriginal(resource)) { continue; }
++		const originalIncludes = query.includePattern || folder.includePattern ? { ...query.includePattern, ...folder.includePattern } : undefined;
++		const addFile = (resource: URI) => {
++			if (!isEqualOrParent(resource, folder.folder) || !matchesOriginal(resource)) { return; }
 +			const relative = relativePath(folder.folder, resource)!;
-+			if (folder.includePattern && !glob.match(folder.includePattern, relative)) { continue; }
++			if (originalIncludes && !glob.match(originalIncludes, relative, { ignoreCase: !!query.ignoreGlobCase })) { return; }
 +			includePattern[literalGlob(relative)] = true;
-+		}
-+		// Explorer deliberately keeps these project metadata directories accessible.
-+		for (const directory of scope.directories) {
-+			const ancestor = directory === '.' ? scope.root : URI.joinPath(scope.root, directory);
-+			for (const name of metadata) {
-+				const metadataRoot = URI.joinPath(ancestor, name);
-+				if (isEqualOrParent(metadataRoot, folder.folder)) {
-+					includePattern[`${literalGlob(relativePath(folder.folder, metadataRoot)!)}/**`] = true;
-+				} else if (isEqualOrParent(folder.folder, metadataRoot)) { includePattern['**'] = true; }
++		};
++		if (scope.projectRoots) {
++			for (const path of scope.projectRoots) {
++				const project = scope.root.with({ path });
++				if (!isSmartSearchResourceAllowed(scope, project, true)) { continue; }
++				let prefix: string;
++				if (isEqualOrParent(project, folder.folder)) { prefix = relativePath(folder.folder, project)!; }
++				else if (isEqualOrParent(folder.folder, project) && isSmartSearchResourceAllowed(scope, folder.folder, true)) { prefix = ''; }
++				else { continue; }
++				for (const pattern of subtreePatterns(prefix, originalIncludes, !!query.ignoreGlobCase)) { includePattern[pattern] = true; }
++			}
++			for (const path of scope.notebooks ?? []) {
++				const resource = scope.root.with({ path });
++				if (isSmartSearchResourceAllowed(scope, resource)) { addFile(resource); }
++			}
++		} else {
++			for (const file of scope.files ?? []) { addFile(URI.joinPath(scope.root, file)); }
++			for (const directory of scope.directories ?? ['.']) {
++				const ancestor = directory === '.' ? scope.root : URI.joinPath(scope.root, directory);
++				for (const name of metadata) {
++					const metadataRoot = URI.joinPath(ancestor, name);
++					if (isEqualOrParent(metadataRoot, folder.folder)) { includePattern[`${literalGlob(relativePath(folder.folder, metadataRoot)!)}/**`] = true; }
++					else if (isEqualOrParent(folder.folder, metadataRoot)) { includePattern['**'] = true; }
++				}
 +			}
 +		}
-+		// Never let an empty include list mean "search everything" to a provider.
-+		if (!Object.keys(includePattern).length) { includePattern['**'] = false; }
-+		return { ...folder, includePattern };
++		// Merge into every exclusion entry: provider adapters can combine them
++		// differently, and a user false value must never disable Smart exclusions.
++		const excludePattern = folder.excludePattern?.length
++			? folder.excludePattern.map(exclude => ({ ...exclude, pattern: { ...exclude.pattern, ...mandatoryExcludes } }))
++			: [{ pattern: mandatoryExcludes }];
++		return { ...folder, includePattern, excludePattern, ignoreSymlinks: scope.projectRoots ? true : folder.ignoreSymlinks };
 +	}).filter(folder => Object.values(folder.includePattern).some(Boolean));
-+	return { ...query, folderQueries, includePattern: undefined, usingSearchPaths: true,
++	const excludePattern: glob.IExpression = { ...query.excludePattern, ...mandatoryExcludes };
++	return { ...query, folderQueries, includePattern: undefined, excludePattern, usingSearchPaths: true,
 +		...('cacheKey' in query && typeof query.cacheKey === 'string' ? { cacheKey: `${query.cacheKey}:${scope.scannedAt ?? ''}` } : {}),
 +		extraFileResources: query.extraFileResources?.filter(resource => isSmartSearchResourceAllowed(scope, resource) && matchesOriginal(resource)) };
 +}

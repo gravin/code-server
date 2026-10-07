@@ -61,17 +61,23 @@ Index: code-server/lib/vscode/src/vs/workbench/contrib/files/browser/views/explo
 ===================================================================
 --- code-server.orig/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerViewer.ts
 +++ code-server/lib/vscode/src/vs/workbench/contrib/files/browser/views/explorerViewer.ts
-@@ -1227,6 +1227,9 @@
+@@ -58,6 +58,7 @@
+ import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
+ import { WebFileSystemAccess } from '../../../../../platform/files/browser/webFileSystemAccess.js';
+ import { IgnoreFile } from '../../../../services/search/common/ignoreFile.js';
++import { ISmartSearchScope, getSmartSearchScope, isSmartSearchResourceAllowed } from '../../../../services/search/common/smartSearchScope.js';
+ import { ResourceSet } from '../../../../../base/common/map.js';
+ import { TernarySearchTree } from '../../../../../base/common/ternarySearchTree.js';
+ import { defaultCountBadgeStyles, defaultInputBoxStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
+@@ -1227,6 +1228,7 @@
   * Makes sure that visible editors are always shown in the explorer even if they are filtered out by settings.
   */
  export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
-+	private smartRoot: URI | undefined;
-+	private smartDirectories = new Set<string>();
-+	private smartFiles: Set<string> | undefined;
++	private smartScope: ISmartSearchScope | undefined;
  	private hiddenExpressionPerRoot = new Map<string, CachedParsedExpression>();
  	private editorsAffectingFilter = new Set<EditorInput>();
  	private _onDidChange = new Emitter<void>();
-@@ -1249,7 +1252,7 @@
+@@ -1249,7 +1251,7 @@
  		this.toDispose.push(this._onDidChange);
  		this.toDispose.push(this.contextService.onDidChangeWorkspaceFolders(() => this.updateConfiguration()));
  		this.toDispose.push(this.configurationService.onDidChangeConfiguration((e) => {
@@ -80,33 +86,26 @@ Index: code-server/lib/vscode/src/vs/workbench/contrib/files/browser/views/explo
  				this.updateConfiguration();
  			}
  		}));
-@@ -1306,7 +1309,11 @@
+@@ -1306,7 +1308,8 @@
  	}
  
  	private updateConfiguration(): void {
 -		let shouldFire = false;
-+		const smart = this.configurationService.getValue<{ root?: string; directories?: string[]; files?: string[] }>('elevator.smartWorkspace');
-+		this.smartRoot = this.contextService.getWorkspace().folders.find(folder => folder.uri.path === smart?.root)?.uri;
-+		this.smartDirectories = new Set(smart?.directories ?? []);
-+		this.smartFiles = smart?.files ? new Set(smart.files) : undefined;
++		this.smartScope = getSmartSearchScope(this.configurationService, this.contextService);
 +		let shouldFire = true;
  		let updatedGitIgnoreSetting = false;
  		this.contextService.getWorkspace().folders.forEach(folder => {
  			const configuration = this.configurationService.getValue<IFilesConfiguration>({ resource: folder.uri });
-@@ -1385,6 +1392,17 @@
+@@ -1385,6 +1388,13 @@
  	}
  
  	filter(stat: ExplorerItem, parentVisibility: TreeVisibility): boolean {
-+		// Keep the saved code/configuration snapshot and its ancestor directories.
-+		// Metadata remains accessible and no files.exclude setting is changed.
-+		if (this.smartRoot && !stat.isRoot && !this.explorerService.getEditableData(stat)
-+			&& this.uriIdentityService.extUri.isEqualOrParent(stat.resource, this.smartRoot)) {
-+			const relative = relativePath(this.smartRoot, stat.resource);
-+			if (relative && !relative.split('/').some(part => ['.vscode', '.tours', '.mvn'].includes(part))
-+				&& (stat.isDirectory ? !this.smartDirectories.has(relative) : this.smartFiles && !this.smartFiles.has(relative))) {
-+				stat.isExcluded = true;
-+				return false;
-+			}
++		// Share project-prefix, standalone Notebook and skipped-directory rules
++		// with all search entry points. Normal workspaces have no Smart scope.
++		if (this.smartScope && !stat.isRoot && !this.explorerService.getEditableData(stat)
++			&& !isSmartSearchResourceAllowed(this.smartScope, stat.resource, stat.isDirectory)) {
++			stat.isExcluded = true;
++			return false;
 +		}
  		// Add newly visited .gitignore files to the ignore tree
  		if (stat.name === '.gitignore' && this.ignoreTreesPerRoot.has(stat.root.resource.toString())) {
